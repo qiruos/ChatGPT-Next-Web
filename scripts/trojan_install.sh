@@ -59,25 +59,28 @@ function error() {
     red "==========================================================="
 }
 
+# checkPortExist 端口检测
+func checkPortExist() {
+  port="$1"
+  Port=`netstat -tlpn | awk -F '[: ]+' '$1=="tcp"{print $5}' | grep -w "$port"`
+  if [ -n "$Port80" ]; then
+    process=`netstat -tlpn | awk -F '[: ]+' '$5=="80"{print $9}'`
+    error "检测到$1端口被占用，占用进程为：${process}，本次安装结束"
+    return 0 # Return 0 when IP is valid.
+  fi
+  return 1 # Return 1 when IP is invalid.
+}
+
 function install_trojan(){
 systemctl stop nginx
 $systemPackage -y install net-tools socat
-Port80=`netstat -tlpn | awk -F '[: ]+' '$1=="tcp"{print $5}' | grep -w 80`
-Port443=`netstat -tlpn | awk -F '[: ]+' '$1=="tcp"{print $5}' | grep -w 443`
-if [ -n "$Port80" ]; then
-    process80=`netstat -tlpn | awk -F '[: ]+' '$5=="80"{print $9}'`
-    red "==========================================================="
-    red "检测到80端口被占用，占用进程为：${process80}，本次安装结束"
-    red "==========================================================="
+if checkPortExist 80; then
     exit 1
 fi
-if [ -n "$Port443" ]; then
-    process443=`netstat -tlpn | awk -F '[: ]+' '$5=="443"{print $9}'`
-    red "============================================================="
-    red "检测到443端口被占用，占用进程为：${process443}，本次安装结束"
-    red "============================================================="
+if checkPortExist 443; then
     exit 1
 fi
+
 CHECK=$(grep SELINUX= /etc/selinux/config | grep -v "#")
 if [ "$CHECK" == "SELINUX=enforcing" ]; then
     red "======================================================================="
@@ -193,7 +196,7 @@ EOF
 	#设置伪装站
 	rm -rf /usr/share/nginx/html/*
 	cd /usr/share/nginx/html/
-	wget https://github.com/V2RaySSR/Trojan/raw/master/web.zip
+	wget https://github.com/qiruos/ChatGPT-Next-Web/releases/download/v1.0.0/web.zip
     	unzip web.zip
 	systemctl stop nginx
 	sleep 5
