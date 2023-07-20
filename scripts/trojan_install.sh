@@ -751,8 +751,8 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
     chmod +x ${systempwd}trojan.service
-    systemctl start trojan.service
     systemctl enable trojan.service
+    systemctl start trojan.service
 }
 
 function create_nginx_config() {
@@ -786,6 +786,38 @@ http {
 EOF
 }
 
+function check_selinux() {
+    CHECK=$(grep "SELINUX=" /etc/selinux/config | grep -v "#")
+    if [ "$CHECK" == "SELINUX=enforcing" ]; then
+        red "======================================================================="
+        red "检测到SELinux为开启状态，为防止申请证书失败，请先重启VPS后，再执行本脚本"
+        red "======================================================================="
+        read -p "是否现在重启 ?请输入 [Y/n] :" yn
+      [ -z "${yn}" ] && yn="y"
+      if [[ $yn == [Yy] ]]; then
+          sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
+                setenforce 0
+          echo -e "VPS 重启中..."
+          reboot
+      fi
+        exit
+    fi
+    if [ "$CHECK" == "SELINUX=permissive" ]; then
+        red "======================================================================="
+        red "检测到SELinux为宽容状态，为防止申请证书失败，请先重启VPS后，再执行本脚本"
+        red "======================================================================="
+        read -p "是否现在重启 ?请输入 [Y/n] :" yn
+      [ -z "${yn}" ] && yn="y"
+      if [[ $yn == [Yy] ]]; then
+          sed -i 's/SELINUX=permissive/SELINUX=disabled/g' /etc/selinux/config
+                setenforce 0
+          echo -e "VPS 重启中..."
+          reboot
+      fi
+        exit
+    fi
+}
+
 
 # checkPortExist 端口检测
 function checkPortExist() {
@@ -800,121 +832,77 @@ function checkPortExist() {
 }
 
 function install_trojan(){
-systemctl stop nginx
-$systemPackage -y install net-tools socat
-if checkPortExist 80; then
-    exit 1
-fi
-if checkPortExist 443; then
-    exit 1
-fi
+  systemctl stop nginx
+  $systemPackage -y install net-tools socat
+  checkPortExist 80 && exit 1
+  checkPortExist 443 && exit 1
 
-CHECK=$(grep SELINUX= /etc/selinux/config | grep -v "#")
-if [ "$CHECK" == "SELINUX=enforcing" ]; then
-    red "======================================================================="
-    red "检测到SELinux为开启状态，为防止申请证书失败，请先重启VPS后，再执行本脚本"
-    red "======================================================================="
-    read -p "是否现在重启 ?请输入 [Y/n] :" yn
-	[ -z "${yn}" ] && yn="y"
-	if [[ $yn == [Yy] ]]; then
-	    sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
-            setenforce 0
-	    echo -e "VPS 重启中..."
-	    reboot
-	fi
-    exit
-fi
-if [ "$CHECK" == "SELINUX=permissive" ]; then
-    red "======================================================================="
-    red "检测到SELinux为宽容状态，为防止申请证书失败，请先重启VPS后，再执行本脚本"
-    red "======================================================================="
-    read -p "是否现在重启 ?请输入 [Y/n] :" yn
-	[ -z "${yn}" ] && yn="y"
-	if [[ $yn == [Yy] ]]; then
-	    sed -i 's/SELINUX=permissive/SELINUX=disabled/g' /etc/selinux/config
-            setenforce 0
-	    echo -e "VPS 重启中..."
-	    reboot
-	fi
-    exit
-fi
-if [ "$release" == "centos" ]; then
-    if  [ -n "$(grep ' 6\.' /etc/redhat-release)" ] ;then
-    red "==============="
-    red "当前系统不受支持"
-    red "==============="
-    exit
-    fi
-    if  [ -n "$(grep ' 5\.' /etc/redhat-release)" ] ;then
-    red "==============="
-    red "当前系统不受支持"
-    red "==============="
-    exit
-    fi
-    systemctl stop firewalld
-    systemctl disable firewalld
-    rpm -Uvh http://nginx.org/packages/centos/7/noarch/RPMS/nginx-release-centos-7-0.el7.ngx.noarch.rpm
-elif [ "$release" == "ubuntu" ]; then
-    if  [ -n "$(grep ' 14\.' /etc/os-release)" ] ;then
-    red "==============="
-    red "当前系统不受支持"
-    red "==============="
-    exit
-    fi
-    if  [ -n "$(grep ' 12\.' /etc/os-release)" ] ;then
-    red "==============="
-    red "当前系统不受支持"
-    red "==============="
-    exit
-    fi
-    systemctl stop ufw
-    systemctl disable ufw
-    apt-get update
-elif [ "$release" == "debian" ]; then
-    apt-get update
-fi
-$systemPackage -y install  nginx wget unzip zip curl tar >/dev/null 2>&1
-systemctl enable nginx
-systemctl stop nginx
-green "======================="
-blue "请输入绑定到本VPS的域名"
-green "======================="
-read your_domain
-real_addr=`ping ${your_domain} -c 1 | sed '1{s/[^(]*(//;s/).*//;q}'`
-if validate_ip $real_addr; then
-    echo "Valid IP."
-else
-    echo "Invalid IP."
-fi
-local_name=`curl -s -L ip.tool.lu | awk -F "归属地: " '{print $2}'`
-local_addr=`curl -s -L ip.tool.lu|grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}"`
+  if [ "$release" == "centos" ]; then
+      if  [ -n "$(grep ' 6\.' /etc/redhat-release)" ] ;then
+        error "当前系统不受支持"
+        exit
+      fi
+      if  [ -n "$(grep ' 5\.' /etc/redhat-release)" ] ;then
+        error "当前系统不受支持"
+        exit
+      fi
+      systemctl stop firewalld
+      systemctl disable firewalld
+      rpm -Uvh http://nginx.org/packages/centos/7/noarch/RPMS/nginx-release-centos-7-0.el7.ngx.noarch.rpm
+  elif [ "$release" == "ubuntu" ]; then
+      if  [ -n "$(grep ' 14\.' /etc/os-release)" ] ;then
+        error "当前系统不受支持"
+        exit
+      fi
+      if  [ -n "$(grep ' 12\.' /etc/os-release)" ] ;then
+        error "当前系统不受支持"
+        exit
+      fi
+      systemctl stop ufw
+      systemctl disable ufw
+      apt-get update
+  elif [ "$release" == "debian" ]; then
+      apt-get update
+  fi
 
-if [ $real_addr != $local_addr ] ; then
-  red "================================"
-  red "域名解析地址与本VPS IP地址不一致"
-  red "本次安装失败，请确保域名解析正常"
-  red "================================"
-  return 1
-fi
+  $systemPackage -y install  nginx wget unzip zip curl tar >/dev/null 2>&1
+  systemctl enable nginx
+  systemctl stop nginx
+
+  green "======================="
+  blue "请输入绑定到本VPS的域名"
+  green "======================="
+  read -r your_domain
+  real_addr=$(ping ${your_domain} -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')
+  validate_ip "$real_addr" || { error "Invalid IP."; exit; }
+  local_name=$(curl -s -L ip.tool.lu|awk -F "归属地: " '{print $2}' | tr -d '[:cntrl:]')
+  local_addr=$(curl -s -L ip.tool.lu|grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
+
+  if [ "$real_addr" != "$local_addr" ] ; then
+    error "域名解析地址与本VPS IP地址不一致" "本次安装失败，请确保域名解析正常"
+    return 1
+  fi
 	green "=========================================="
 	green "       域名解析正常，开始安装trojan"
 	green "=========================================="
 	sleep 1s
-  create_nginx_config
+
 	#设置伪装站
+	create_nginx_config
 	rm -rf /usr/share/nginx/html/*
 	cd /usr/share/nginx/html/ || return
 	wget https://github.com/qiruos/ChatGPT-Next-Web/releases/download/v1.0.0/web.zip
-    	unzip web.zip
+  unzip web.zip
 	systemctl stop nginx
 	sleep 5
+
 	#申请https证书
 	mkdir /usr/src/trojan-cert /usr/src/trojan-temp
 	curl https://get.acme.sh | sh
 	echo "申请https证书"
-        ~/.acme.sh/acme.sh  --register-account -m qiruos@outlook.com
+  ~/.acme.sh/acme.sh  --register-account -m qiruos@outlook.com
 	~/.acme.sh/acme.sh  --issue  -d $your_domain  --standalone
-    	~/.acme.sh/acme.sh  --installcert  -d  $your_domain   \
+  ~/.acme.sh/acme.sh  --installcert  -d  $your_domain   \
         --key-file   /usr/src/trojan-cert/private.key \
         --fullchain-file /usr/src/trojan-cert/fullchain.cer
 	echo "申请https证书ok"
@@ -926,26 +914,20 @@ fi
     latest_version=`grep tag_name latest| awk -F '[:,"v]' '{print $6}'`
     wget https://github.com/trojan-gfw/trojan/releases/download/v${latest_version}/trojan-${latest_version}-linux-amd64.tar.xz
     tar xf trojan-${latest_version}-linux-amd64.tar.xz
-    #下载trojan WIN客户端
-    wget https://github.com/atrandys/trojan/raw/master/trojan-cli.zip
-    wget -P /usr/src/trojan-temp https://github.com/trojan-gfw/trojan/releases/download/v${latest_version}/trojan-${latest_version}-win.zip
-    unzip trojan-cli.zip
-    unzip /usr/src/trojan-temp/trojan-${latest_version}-win.zip -d /usr/src/trojan-temp/
-    cp /usr/src/trojan-cert/fullchain.cer /usr/src/trojan-cli/fullchain.cer
-    mv -f /usr/src/trojan-temp/trojan/trojan.exe /usr/src/trojan-cli/
-          #下载trojan MAC客户端
-          wget -P /usr/src/trojan-macos https://github.com/trojan-gfw/trojan/releases/download/v${latest_version}/trojan-${latest_version}-macos.zip
-          unzip /usr/src/trojan-macos/trojan-${latest_version}-macos.zip -d /usr/src/trojan-macos/
-          rm -rf /usr/src/trojan-macos/trojan-${latest_version}-macos.zip
+    #下载android客户端
+    wget -O /usr/share/nginx/html/clash.apk https://github.com/Kr328/ClashForAndroid/releases/download/v2.5.12/cfa-2.5.12-foss-arm64-v8a-release.apk
+    #下载windows客户端
+    wget -O /usr/share/nginx/html/clash.exe https://github.com/Fndroid/clash_for_windows_pkg/releases/download/0.20.28/Clash.for.Windows.Setup.0.20.28.exe
     trojan_passwd=$(cat /dev/urandom | head -1 | md5sum | head -c 8)
-          #配置trojan mac
-    create_clash_config "$trojan_passwd" "$local_name" "$local_addr"
+    create_clash_config "$trojan_passwd" "$local_name" "$your_domain"
     create_trojan_server_config "$trojan_passwd"
     create_and_start_service
 
     green "======================================================================"
     green "Trojan已安装完成"
-    blue "clash：http://${your_domain}/ccc.yaml"
+    blue "clash：https://${your_domain}/ddd.yaml"
+    blue "clash：https://${your_domain}/clash.apk"
+    blue "clash：https://${your_domain}/clash.exe"
     green "======================================================================"
   else
     red "==================================="
