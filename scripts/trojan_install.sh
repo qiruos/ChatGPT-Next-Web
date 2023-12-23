@@ -1,4 +1,13 @@
 #!/bin/bash
+# input
+
+# 域名
+your_domain="www.qiruos.com"
+# 名称
+local_name="外部"
+# 邮箱
+your_email="qiruos@outlook.com"
+
 # 字体颜色
 blue(){
     echo -e "\033[34m\033[01m$1\033[0m"
@@ -818,7 +827,6 @@ function check_selinux() {
     fi
 }
 
-
 # checkPortExist 端口检测
 function checkPortExist() {
   port="$1"
@@ -826,17 +834,12 @@ function checkPortExist() {
   if [ -n "$Port" ]; then
     process=$(netstat -tlpn | awk -F '[: ]+' '$5=="80"{print $9}')
     error "检测到$1端口被占用，占用进程为：${process}，本次安装结束"
-    return 0 # Return 0 when IP is valid.
+    return 1 # Return 1 when IP is invalid.
   fi
-  return 1 # Return 1 when IP is invalid.
+  return 0 # Return 0 when IP is valid.
 }
 
-function install_trojan(){
-  systemctl stop nginx
-  $systemPackage -y install net-tools socat
-  checkPortExist 80 && exit 1
-  checkPortExist 443 && exit 1
-
+function checkSystem() {
   if [ "$release" == "centos" ]; then
       if  [ -n "$(grep ' 6\.' /etc/redhat-release)" ] ;then
         error "当前系统不受支持"
@@ -864,60 +867,85 @@ function install_trojan(){
   elif [ "$release" == "debian" ]; then
       apt-get update
   fi
+}
 
-  $systemPackage -y install  nginx wget unzip zip curl tar >/dev/null 2>&1
-  systemctl enable nginx
-  systemctl stop nginx
-
-  green "======================="
-  blue "请输入绑定到本VPS的域名"
-  green "======================="
-  read -r your_domain
+function checkDomain() {
   real_addr=$(ping ${your_domain} -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')
   validate_ip "$real_addr" || { error "Invalid IP."; exit; }
-  local_name=$(curl -s -L ip.tool.lu|awk -F "归属地: " '{print $2}' | tr -d '[:cntrl:]')
-  local_addr=$(curl -s -L ip.tool.lu|grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
-
+  local_addr=$(curl -s -L ifconfig.me|grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
   if [ "$real_addr" != "$local_addr" ] ; then
     error "域名解析地址与本VPS IP地址不一致" "本次安装失败，请确保域名解析正常"
     return 1
   fi
+  return 0
+}
+
+function buildNginxSever() {
+  create_nginx_config
+  rm -rf /usr/share/nginx/html/*
+  cd /usr/share/nginx/html/ || return
+  wget https://github.com/qiruos/ChatGPT-Next-Web/releases/download/v1.0.1/web.zip
+  unzip web.zip
+  # android
+  wget -O /usr/share/nginx/html/clash.apk https://github.com/qiruos/ChatGPT-Next-Web/releases/download/v1.0.1/cfa-2.5.12-foss-arm64-v8a-release.apk
+  # windows
+  wget -O /usr/share/nginx/html/clash.exe https://github.com/qiruos/ChatGPT-Next-Web/releases/download/v1.0.1/Clash.for.Windows.Setup.0.20.29.exe
+  sleep 5
+}
+
+function updateHttpsCert() {
+  # 安装 acme
+  installAcme
+  echo "申请https证书"
+  systemctl start nginx
+  mkdir /usr/src/trojan-cert /usr/src/trojan-temp
+  ~/.acme.sh/acme.sh  --issue  -d "$your_domain" -d --webroot /usr/share/nginx/html/
+  ~/.acme.sh/acme.sh  --installcert  -d  "$your_domain"   \
+        --key-file   /usr/src/trojan-cert/private.key \
+        --fullchain-file /usr/src/trojan-cert/fullchain.cer
+  test -s /usr/src/trojan-cert/fullchain.cer || (echo "申请https证书ok"&&exit 1)
+  echo "申请https证书ok"
+  systemctl restart nginx  > /dev/null
+  systemctl restart trojan > /dev/null
+}
+
+function installAcme() {
+  test -s ~/.acme.sh/acme.sh || return 0
+  curl https://get.acme.sh | sh -s email="$your_email"
+}
+
+function checkTrojanInstall() {
+  processCount=$(ps -ef |grep -c trojan|grep -v  grep)
+  if [ "$processCount" -gt 0 ]; then
+    return 0
+  fi
+  return 1
+}
+
+function install_trojan(){
+  checkTrojanInstall && (error "已安装" && exit 1)
+  checkSystem
+  checkDomain && exit 1
+  systemctl stop nginx
+  checkPortExist 80 && exit 1
+  checkPortExist 443 && exit 1
+
+  $systemPackage -y install net-tools socat
+  $systemPackage -y install  nginx wget unzip zip curl tar >/dev/null 2>&1
+  systemctl enable nginx
+  systemctl stop nginx
+
 	green "=========================================="
 	green "       域名解析正常，开始安装trojan"
 	green "=========================================="
 	sleep 1s
+	buildNginxSever
 
-	#设置伪装站
-	create_nginx_config
-	rm -rf /usr/share/nginx/html/*
-	cd /usr/share/nginx/html/ || return
-	wget https://github.com/qiruos/ChatGPT-Next-Web/releases/download/v1.0.0/web.zip
-  unzip web.zip
-	systemctl stop nginx
-	sleep 5
-
-	#申请https证书
-	mkdir /usr/src/trojan-cert /usr/src/trojan-temp
-	curl https://get.acme.sh | sh
-	echo "申请https证书"
-  ~/.acme.sh/acme.sh  --register-account -m qiruos@outlook.com
-	~/.acme.sh/acme.sh  --issue  -d $your_domain  --standalone
-  ~/.acme.sh/acme.sh  --installcert  -d  $your_domain   \
-        --key-file   /usr/src/trojan-cert/private.key \
-        --fullchain-file /usr/src/trojan-cert/fullchain.cer
-	echo "申请https证书ok"
-	if test -s /usr/src/trojan-cert/fullchain.cer; then
-    systemctl start nginx
+	if updateHttpsCert; then
     cd /usr/src || return 1
-    #wget https://github.com/trojan-gfw/trojan/releases/download/v1.13.0/trojan-1.13.0-linux-amd64.tar.xz
-    wget https://api.github.com/repos/trojan-gfw/trojan/releases/latest
-    latest_version=`grep tag_name latest| awk -F '[:,"v]' '{print $6}'`
-    wget https://github.com/trojan-gfw/trojan/releases/download/v${latest_version}/trojan-${latest_version}-linux-amd64.tar.xz
-    tar xf trojan-${latest_version}-linux-amd64.tar.xz
-    #下载android客户端
-    wget -O /usr/share/nginx/html/clash.apk https://github.com/Kr328/ClashForAndroid/releases/download/v2.5.12/cfa-2.5.12-foss-arm64-v8a-release.apk
-    #下载windows客户端
-    wget -O /usr/share/nginx/html/clash.exe https://github.com/Fndroid/clash_for_windows_pkg/releases/download/0.20.28/Clash.for.Windows.Setup.0.20.28.exe
+    wget https://github.com/qiruos/ChatGPT-Next-Web/releases/download/v1.0.1/trojan-1.16.0-linux-amd64.tar.xz
+    tar xf trojan-1.16.0-linux-amd64.tar.xz
+    rm -rf trojan-1.16.0-linux-amd64.tar.xz
     trojan_passwd=$(cat /dev/urandom | head -1 | md5sum | head -c 8)
     create_clash_config "$trojan_passwd" "$local_name" "$your_domain"
     create_trojan_server_config "$trojan_passwd"
@@ -937,44 +965,7 @@ function install_trojan(){
     green "2. 重新执行脚本，使用修复证书功能"
     red "==================================="
 	fi
-}
 
-function repair_cert(){
-systemctl stop nginx
-Port80=`netstat -tlpn | awk -F '[: ]+' '$1=="tcp"{print $5}' | grep -w 80`
-if [ -n "$Port80" ]; then
-    process80=`netstat -tlpn | awk -F '[: ]+' '$5=="80"{print $9}'`
-    red "==========================================================="
-    red "检测到80端口被占用，占用进程为：${process80}，本次安装结束"
-    red "==========================================================="
-    exit 1
-fi
-green "======================="
-blue "请输入绑定到本VPS的域名"
-blue "务必与之前失败使用的域名一致"
-green "======================="
-read your_domain
-real_addr=`ping ${your_domain} -c 1 | sed '1{s/[^(]*(//;s/).*//;q}'`
-local_addr='198.13.32.205'
-if [ $real_addr == $local_addr ] ; then
-    ~/.acme.sh/acme.sh  --issue  -d $your_domain  --standalone
-    ~/.acme.sh/acme.sh  --installcert  -d  $your_domain   \
-        --key-file   /usr/src/trojan-cert/private.key \
-        --fullchain-file /usr/src/trojan-cert/fullchain.cer
-    if test -s /usr/src/trojan-cert/fullchain.cer; then
-        green "证书申请成功"
-	green "请将/usr/src/trojan-cert/下的fullchain.cer下载放到客户端trojan-cli文件夹"
-	systemctl restart trojan
-	systemctl start nginx
-    else
-    	red "申请证书失败"
-    fi
-else
-    red "================================"
-    red "域名解析地址与本VPS IP地址不一致"
-    red "本次安装失败，请确保域名解析正常"
-    red "================================"
-fi	
 }
 
 function remove_trojan(){
@@ -997,55 +988,4 @@ function remove_trojan(){
     green "=============="
 }
 
-function bbr_boost_sh(){
-    wget -N --no-check-certificate "https://raw.githubusercontent.com/chiakge/Linux-NetSpeed/master/tcp.sh" && chmod +x tcp.sh && ./tcp.sh
-}
-
-start_menu(){
-    clear
-    green " ===================================="
-    green " Trojan 一键安装自动脚本 2020-2-27 更新      "
-    green " 系统：centos7+/debian9+/ubuntu16.04+"
-    green " 网站：www.v2rayssr.com （已开启禁止国内访问）"
-    green " 此脚本为 atrandys 的，波仔集成BBRPLUS加速及MAC客户端 "
-    green " Youtube：波仔分享                "
-    green " ===================================="
-    blue " 声明："
-    red " *请不要在任何生产环境使用此脚本"
-    red " *请不要有其他程序占用80和443端口"
-    red " *若是第二次使用脚本，请先执行卸载trojan"
-    green " ======================================="
-    echo
-    green " 1. 安装trojan"
-    red " 2. 卸载trojan"
-    green " 3. 修复证书"
-    green " 4. 安装BBR-PLUS加速4合一脚本"
-    blue " 0. 退出脚本"
-    echo
-    read -p "请输入数字:" num
-    case "$num" in
-    1)
-    install_trojan
-    ;;
-    2)
-    remove_trojan 
-    ;;
-    3)
-    repair_cert 
-    ;;
-    4)
-    bbr_boost_sh 
-    ;;
-    0)
-    exit 1
-    ;;
-    *)
-    clear
-    red "请输入正确数字"
-    sleep 1s
-    start_menu
-    ;;
-    esac
-}
-
-start_menu
+install_trojan
